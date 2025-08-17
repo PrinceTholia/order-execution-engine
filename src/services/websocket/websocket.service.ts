@@ -106,7 +106,7 @@ export class WebSocketService {
    * Currently handles ping/pong for connection health.
    */
   
-  private handleClientMessage(connectionId: string, message: Buffer | ArrayBuffer | Buffer[]): void {
+  private handleClientMessage(connectionId: string, message: any): void {
     const connection = this.connections.get(connectionId);
     if (!connection) return;
 
