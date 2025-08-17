@@ -79,7 +79,7 @@ export class WebSocketService {
       });
 
       // Handle incoming messages
-      socket.on('message', (message) => {
+      socket.on('message', (message:any) => {
         this.handleClientMessage(connectionId, message as Buffer);
       });
 
@@ -90,7 +90,7 @@ export class WebSocketService {
       });
 
       // Handle connection errors
-      socket.on('error', (error) => {
+      socket.on('error', (error:any) => {
         console.error(`🚨 WebSocket error for ${userId}:`, error);
         this.connections.delete(connectionId);
       });

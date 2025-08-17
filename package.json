@@ -22,6 +22,7 @@
   },
   "devDependencies": {
     "@types/jest": "^29.5.7",
+    "@types/node": "^20.8.7",
     "@types/pg": "^8.15.5",
     "@types/uuid": "^9.0.8",
     "@types/ws": "^8.5.8",

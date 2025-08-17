@@ -214,7 +214,7 @@ export class DatabaseService {
     try {
       const result = await this.db.query(query, [userId, limit]);
       
-      return result.rows.map(row => ({
+      return result.rows.map((row: any) => ({
         id: row.id,
         userId: row.user_id,
         type: row.type,
