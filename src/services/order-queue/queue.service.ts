@@ -79,9 +79,12 @@ export class OrderQueueService {
       const connection = new IORedis({
         host: process.env.REDIS_HOST || 'localhost',
         port: parseInt(process.env.REDIS_PORT || '6379'),
-        maxRetriesPerRequest: null,           // Required for BullMQ
-        enableReadyCheck: false,              // Faster connection
-        lazyConnect: true                     // Connect only when needed
+        password: process.env.REDIS_PASSWORD, // Add for Upstash
+        maxRetriesPerRequest: null,
+        enableReadyCheck: false,
+        lazyConnect: true,
+        // Add TLS for Upstash if using secure connection
+        tls: process.env.NODE_ENV === 'production' ? {} : undefined
       });
 
       console.log('🔗 Redis connection created for queue service');
@@ -91,6 +94,7 @@ export class OrderQueueService {
       throw new Error(`Redis connection failed: ${error.message}`);
     }
   }
+
 
   /**
    * Initialize Worker
