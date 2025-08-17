@@ -5,7 +5,6 @@
  * HTTP → WebSocket upgrade pattern required by the assignment.
  * This is the main entry point for users to submit orders.
  */
-
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { v4 as uuidv4 } from 'uuid';
 import { 

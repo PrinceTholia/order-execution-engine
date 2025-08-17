@@ -4,8 +4,8 @@
  * Handles all database operations for orders, routing, and events.
  * Uses connection pooling for high performance.
  */
-
-import { Pool } from 'pg';
+// @ts-ignore
+import { Pool, PoolClient } from 'pg';
 import { db, checkDatabaseConnection } from '../../config/database.config';
 import { 
   Order, 
