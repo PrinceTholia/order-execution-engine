@@ -88,6 +88,57 @@ const initializeFastify = (): FastifyInstance => {
 };
 
 /**
+ * Parse Database Configuration
+ * Handles both DATABASE_URL (Render default) and individual DB_* vars
+ */
+function getDatabaseConfig() {
+  if (process.env.DATABASE_URL) {
+    // Parse DATABASE_URL format: postgres://user:password@host:port/database
+    const url = new URL(process.env.DATABASE_URL);
+    return {
+      host: url.hostname,
+      port: parseInt(url.port) || 5432,
+      user: url.username,
+      password: url.password,
+      database: url.pathname.slice(1) // Remove leading slash
+    };
+  }
+  
+  // Fallback to individual environment variables
+  return {
+    host: process.env.DB_HOST,
+    port: parseInt(process.env.DB_PORT || '5432'),
+    user: process.env.DB_USER,
+    password: process.env.DB_PASSWORD,
+    database: process.env.DB_NAME
+  };
+}
+
+/**
+ * Parse Redis Configuration
+ * Handles both REDIS_URL (Upstash format) and individual REDIS_* vars
+ */
+function getRedisConfig() {
+  if (process.env.REDIS_URL) {
+    // Parse REDIS_URL format: redis://default:password@host:port
+    const url = new URL(process.env.REDIS_URL);
+    return {
+      host: url.hostname,
+      port: parseInt(url.port) || 6379,
+      password: url.password
+    };
+  }
+  
+  // Fallback to individual environment variables
+  return {
+    host: process.env.REDIS_HOST,
+    port: parseInt(process.env.REDIS_PORT || '6379'),
+    password: process.env.REDIS_PASSWORD
+  };
+}
+
+
+/**
  * Validate Environment Variables
  * 
  * Ensures all required environment variables are present before
@@ -95,17 +146,26 @@ const initializeFastify = (): FastifyInstance => {
  * missing configuration.
  */
 function validateEnvironment(): void {
-  const required = ['REDIS_HOST', 'REDIS_PORT', 'DB_HOST', 'DB_USER', 'DB_PASSWORD', 'DB_NAME'];
-  const missing = required.filter(key => !process.env[key]);
+  // Check if we have either URL format or individual fields
+  const hasDatabase = process.env.DATABASE_URL || 
+    (process.env.DB_HOST && process.env.DB_USER && process.env.DB_PASSWORD && process.env.DB_NAME);
+    
+  const hasRedis = process.env.REDIS_URL || 
+    (process.env.REDIS_HOST && process.env.REDIS_PORT);
   
-  if (missing.length > 0) {
-    console.error(`❌ Missing required environment variables: ${missing.join(', ')}`);
-    console.error('Please check your .env file and ensure all required variables are set');
+  if (!hasDatabase) {
+    console.error('❌ Missing database configuration. Need either DATABASE_URL or DB_HOST, DB_USER, DB_PASSWORD, DB_NAME');
+    process.exit(1);
+  }
+  
+  if (!hasRedis) {
+    console.error('❌ Missing Redis configuration. Need either REDIS_URL or REDIS_HOST, REDIS_PORT');
     process.exit(1);
   }
   
   console.log('✅ Environment variables validated');
 }
+
 
 /**
  * Initialize All Services
