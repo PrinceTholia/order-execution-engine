@@ -71,10 +71,11 @@ export class DEXRouterService {
       
       return result;
 
-    } catch (error) {
+    } catch (error: any) {
       console.error('❌ Routing failed:', error);
-      throw new Error(`Failed to find route: ${error.message}`);
+      throw new Error(`Failed to find route: ${error instanceof Error ? error.message : String(error)}`);
     }
+
   }
 
   /**
@@ -199,8 +200,9 @@ export class DEXRouterService {
         success: false,
         orderId: order.id,
         executionTime: Date.now() - startTime,
-        errorMessage: error.message
+        errorMessage: error instanceof Error ? error.message : String(error)
       };
+
     }
   }
 

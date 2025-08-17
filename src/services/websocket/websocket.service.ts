@@ -46,7 +46,8 @@ export class WebSocketService {
       
       // Extract userId from query parameters
       // Example: ws://localhost:3000/ws?userId=user123
-      const userId = request.query?.userId as UserId;
+      // const userId = request.query?.userId as UserId;private handleClientMessage
+      const userId = (request.query as any)?.userId as UserId;
       
       if (!userId) {
         socket.close(1008, 'userId parameter required');
@@ -79,7 +80,7 @@ export class WebSocketService {
 
       // Handle incoming messages
       socket.on('message', (message) => {
-        this.handleClientMessage(connectionId, message);
+        this.handleClientMessage(connectionId, message as Buffer);
       });
 
       // Handle connection close
@@ -104,14 +105,21 @@ export class WebSocketService {
    * Process messages received from WebSocket clients.
    * Currently handles ping/pong for connection health.
    */
-  private handleClientMessage(connectionId: string, message: Buffer): void {
+  
+  private handleClientMessage(connectionId: string, message: Buffer | ArrayBuffer | Buffer[]): void {
     const connection = this.connections.get(connectionId);
     if (!connection) return;
 
     connection.lastActivity = new Date();
 
     try {
-      const data = JSON.parse(message.toString());
+      // Convert message to string safely
+      const messageStr = message instanceof Buffer ? message.toString() : 
+                        message instanceof ArrayBuffer ? Buffer.from(message).toString() :
+                        Array.isArray(message) ? Buffer.concat(message).toString() :
+                        String(message);
+      
+      const data = JSON.parse(messageStr);
       
       // Handle ping/pong for connection health
       if (data.type === 'ping') {
@@ -124,10 +132,12 @@ export class WebSocketService {
       }
 
       console.log(`📨 Message from ${connection.userId}:`, data);
-    } catch (error) {
+    } catch (error: any) {
       console.error('Failed to parse WebSocket message:', error);
     }
   }
+
+
 
   /**
    * Send Order Status Update

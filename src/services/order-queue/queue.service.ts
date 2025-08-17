@@ -4,6 +4,12 @@
  * This service manages the order processing queue using BullMQ.
  * It handles up to 10 concurrent orders and processes 100 orders/minute
  * as specified in the assignment requirements.
+ * 
+ * Architecture:
+ * - Uses BullMQ with Redis for reliable job processing
+ * - Implements exponential backoff retry strategy
+ * - Provides real-time WebSocket updates during order lifecycle
+ * - Supports concurrent processing with rate limiting
  */
 
 import { Queue, Worker, QueueEvents, Job } from 'bullmq';
@@ -13,60 +19,117 @@ import { WebSocketService } from '../websocket/websocket.service';
 import { DEXRouterService } from '../dex-router/dex-router.service';
 import { DatabaseService } from '../database/database.service';
 
-// 💡 Beginner Tip: Connection is shared across Queue, Worker, and Events
-// This prevents opening too many Redis connections
-const connection = new IORedis({
-  host: process.env.REDIS_HOST || 'localhost',
-  port: parseInt(process.env.REDIS_PORT || '6379'),
-  maxRetriesPerRequest: null,  // Essential for BullMQ
-  retryDelayOnFailover: 100,
-  enableReadyCheck: false,
-  lazyConnect: true
-});
-
 export class OrderQueueService {
   private queue: Queue;
-  private worker: Worker;
+  private worker!: Worker;  // Definite assignment assertion - initialized in constructor
   private queueEvents: QueueEvents;
+  private database: DatabaseService;
+  private dexRouter: DEXRouterService;
+  private websocketService: WebSocketService;
   
+  /**
+   * Constructor
+   * 
+   * Initializes the queue service with proper dependency injection.
+   * Order of initialization is critical to prevent undefined worker errors.
+   * 
+   * @param database - Database service for order persistence
+   * @param dexRouter - DEX routing service for price comparison
+   * @param websocketService - WebSocket service for real-time updates
+   */
   constructor(
-    private websocketService: WebSocketService,
-    private dexRouter: DEXRouterService,
-    private database: DatabaseService
+    database: DatabaseService,
+    dexRouter: DEXRouterService,
+    websocketService: WebSocketService
   ) {
-    // Initialize queue for order processing
+    this.database = database;
+    this.dexRouter = dexRouter;
+    this.websocketService = websocketService;
+
+    // CRITICAL: Initialize in this exact order to prevent undefined errors
+    
+    // 1. Create Redis connection first
+    const connection = this.createRedisConnection();
+    
+    // 2. Initialize queue second
     this.queue = new Queue('order-execution', { connection });
     
-    // Initialize queue events for monitoring
+    // 3. Initialize queue events for monitoring
     this.queueEvents = new QueueEvents('order-execution', { connection });
     
-    // Initialize worker with concurrency control
-    this.worker = new Worker(
-      'order-execution',
-      this.processOrder.bind(this),  // Bind 'this' context
-      {
-        connection,
-        concurrency: 10,  // 🏗️ Architecture Note: Max 10 concurrent orders
-        limiter: {
-          max: 100,       // Process 100 orders
-          duration: 60000 // Per minute (60 seconds)
-        },
-        // Retry configuration for failed jobs
-        settings: {
-          retryProcessDelay: 2000,  // Wait 2s before retry
-        }
-      }
-    );
+    // 4. Initialize worker third
+    this.initializeWorker(connection);
     
+    // 5. Setup event listeners last (after worker is created)
     this.setupEventListeners();
+
+    console.log('✅ OrderQueueService initialized successfully');
+  }
+
+  /**
+   * Create Redis Connection
+   * 
+   * Creates a shared Redis connection for Queue, Worker, and QueueEvents.
+   * Using a shared connection prevents opening too many Redis connections.
+   * 
+   * @returns IORedis connection instance
+   */
+  private createRedisConnection(): IORedis {
+    try {
+      const connection = new IORedis({
+        host: process.env.REDIS_HOST || 'localhost',
+        port: parseInt(process.env.REDIS_PORT || '6379'),
+        maxRetriesPerRequest: null,           // Required for BullMQ
+        enableReadyCheck: false,              // Faster connection
+        lazyConnect: true                     // Connect only when needed
+      });
+
+      console.log('🔗 Redis connection created for queue service');
+      return connection;
+    } catch (error: any) {
+      console.error('❌ Failed to create Redis connection:', error);
+      throw new Error(`Redis connection failed: ${error.message}`);
+    }
+  }
+
+  /**
+   * Initialize Worker
+   * 
+   * Creates the BullMQ worker that processes jobs from the queue.
+   * Configured for high concurrency (10 concurrent jobs) and rate limiting.
+   * 
+   * @param connection - Redis connection to use
+   */
+  private initializeWorker(connection: IORedis): void {
+    try {
+      this.worker = new Worker(
+        'order-execution',
+        this.processOrder.bind(this),  // Bind context for 'this' access
+        {
+          connection,
+          concurrency: 10,              // Process up to 10 orders simultaneously
+          limiter: {
+            max: 100,                   // Maximum 100 jobs
+            duration: 60000             // Per minute (60 seconds)
+          }
+        }
+      );
+
+      console.log('👷 Order processing worker initialized');
+    } catch (error: any) {
+      console.error('❌ Failed to initialize worker:', error);
+      throw new Error(`Worker initialization failed: ${error.message}`);
+    }
   }
 
   /**
    * Add Order to Processing Queue
    * 
-   * This is called when a new order is submitted via HTTP.
+   * This is called when a new order is submitted via HTTP API.
    * The order gets queued for processing and the user receives
-   * real-time updates via WebSocket.
+   * real-time updates via WebSocket throughout the process.
+   * 
+   * @param order - The order object to process
    */
   async addOrderToQueue(order: Order): Promise<void> {
     try {
@@ -78,21 +141,21 @@ export class OrderQueueService {
           orderData: order 
         },
         {
-          // 🏗️ Architecture Note: Exponential backoff retry strategy
+          // Exponential backoff retry strategy as per requirements
           attempts: 3,
           backoff: {
             type: 'exponential',
-            delay: 2000,  // Start with 2 second delay
+            delay: 2000,              // Start with 2 second delay
           },
-          // Remove completed jobs after 1 hour to save memory
-          removeOnComplete: 50,
-          removeOnFail: 20,
+          // Memory management: remove completed jobs after processing
+          removeOnComplete: 50,       // Keep last 50 successful jobs
+          removeOnFail: 20,           // Keep last 20 failed jobs for debugging
         }
       );
 
-      console.log(`Order ${order.id} added to processing queue`);
+      console.log(`📥 Order ${order.id} added to processing queue`);
       
-      // Notify user that order is queued
+      // Notify user immediately that order is queued
       await this.websocketService.sendOrderUpdate(order.userId, {
         orderId: order.id,
         oldStatus: OrderStatus.PENDING,
@@ -101,9 +164,9 @@ export class OrderQueueService {
         progress: 10
       });
 
-    } catch (error) {
+    } catch (error: any) {
       console.error(`Failed to queue order ${order.id}:`, error);
-      throw new Error(`Queue submission failed: ${error.message}`);
+      throw new Error(`Queue submission failed: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
 
@@ -111,7 +174,14 @@ export class OrderQueueService {
    * Process Individual Order
    * 
    * This is the main processing function that gets called by the worker
-   * for each order in the queue. It orchestrates the entire order lifecycle.
+   * for each order in the queue. It orchestrates the entire order lifecycle:
+   * 1. Order received → Processing
+   * 2. DEX price comparison → Routing
+   * 3. Execute on best DEX → Executing
+   * 4. Transaction confirmed → Completed/Failed
+   * 
+   * @param job - BullMQ job containing order data
+   * @returns ExecutionResult with transaction details
    */
   private async processOrder(job: Job): Promise<ExecutionResult> {
     const { orderId, orderData } = job.data;
@@ -125,10 +195,10 @@ export class OrderQueueService {
       await job.updateProgress(20);
 
       // Step 2: DEX Routing Phase
+      // This is where we compare prices across Raydium and Meteora
       await this.updateOrderStatus(orderData, OrderStatus.ROUTING, 'Comparing prices across DEXes');
       await job.updateProgress(40);
 
-      // 💡 Beginner Tip: This is where we find the best price across DEXes
       const routingResult = await this.dexRouter.findBestRoute(
         orderData.baseToken,
         orderData.quoteToken,
@@ -136,10 +206,10 @@ export class OrderQueueService {
         orderData.side
       );
 
-      console.log(`📊 Best route found: ${routingResult.bestRoute.provider} at ${routingResult.bestRoute.price}`);
+      console.log(`📊 Best route found: ${routingResult.bestRoute.provider} at $${routingResult.bestRoute.price}`);
 
       // Step 3: Order Execution Phase
-      await this.updateOrderStatus(orderData, OrderStatus.EXECUTING, 'Executing order on selected DEX');
+      await this.updateOrderStatus(orderData, OrderStatus.EXECUTING, `Executing order on ${routingResult.bestRoute.provider}`);
       await job.updateProgress(70);
 
       // Execute the swap on the chosen DEX
@@ -150,7 +220,7 @@ export class OrderQueueService {
         await this.updateOrderStatus(orderData, OrderStatus.COMPLETED, 'Order executed successfully');
         await job.updateProgress(100);
 
-        // Update database with execution results
+        // Persist execution results to database
         await this.database.updateOrderExecution(orderId, {
           executionPrice: executionResult.executionPrice!,
           executedAmount: executionResult.executedAmount!,
@@ -159,7 +229,7 @@ export class OrderQueueService {
           status: OrderStatus.COMPLETED
         });
 
-        // Send completion notification
+        // Send final completion notification with all details
         await this.websocketService.sendOrderCompletion(orderData.userId, {
           orderId,
           executionPrice: executionResult.executionPrice!,
@@ -169,6 +239,7 @@ export class OrderQueueService {
           totalTime: Date.now() - startTime
         });
 
+        console.log(`✅ Order ${orderId} completed in ${Date.now() - startTime}ms`);
         return executionResult;
 
       } else {
@@ -176,21 +247,23 @@ export class OrderQueueService {
         throw new Error(executionResult.errorMessage || 'Execution failed');
       }
 
-    } catch (error) {
+    } catch (error: any) {
       console.error(`❌ Order ${orderId} processing failed:`, error);
       
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      
       // Update order status to failed
-      await this.updateOrderStatus(orderData, OrderStatus.FAILED, `Execution failed: ${error.message}`);
+      await this.updateOrderStatus(orderData, OrderStatus.FAILED, `Execution failed: ${errorMessage}`);
       
-      // Update database
-      await this.database.updateOrderStatus(orderId, OrderStatus.FAILED, error.message);
+      // Update database with failure reason
+      await this.database.updateOrderStatus(orderId, OrderStatus.FAILED, errorMessage);
       
-      // Notify user of failure
+      // Notify user of failure with detailed error
       await this.websocketService.sendOrderUpdate(orderData.userId, {
         orderId,
         oldStatus: OrderStatus.EXECUTING,
         newStatus: OrderStatus.FAILED,
-        message: `Order failed: ${error.message}`,
+        message: `Order failed: ${errorMessage}`,
         progress: 0
       });
 
@@ -201,17 +274,22 @@ export class OrderQueueService {
   /**
    * Update Order Status Helper
    * 
-   * Centralizes status updates and ensures consistent WebSocket notifications
+   * Centralizes status updates and ensures consistent WebSocket notifications.
+   * This prevents code duplication and ensures all status changes are tracked.
+   * 
+   * @param order - Order object to update
+   * @param newStatus - New status to set
+   * @param message - Human-readable status message
    */
   private async updateOrderStatus(order: Order, newStatus: OrderStatus, message: string): Promise<void> {
     const oldStatus = order.status;
     order.status = newStatus;
     order.updatedAt = new Date();
 
-    // Update database
+    // Update database first (persistence)
     await this.database.updateOrderStatus(order.id, newStatus);
 
-    // Send WebSocket update
+    // Send WebSocket update second (real-time notification)
     await this.websocketService.sendOrderUpdate(order.userId, {
       orderId: order.id,
       oldStatus,
@@ -226,17 +304,21 @@ export class OrderQueueService {
   /**
    * Progress Calculation Helper
    * 
-   * Maps order status to progress percentage for UI
+   * Maps order status to progress percentage for UI progress bars.
+   * This provides users with visual feedback on order processing stages.
+   * 
+   * @param status - Current order status
+   * @returns Progress percentage (0-100)
    */
   private getProgressForStatus(status: OrderStatus): number {
     const progressMap = {
-      [OrderStatus.PENDING]: 10,
-      [OrderStatus.PROCESSING]: 20,
-      [OrderStatus.ROUTING]: 40,
-      [OrderStatus.EXECUTING]: 70,
-      [OrderStatus.COMPLETED]: 100,
-      [OrderStatus.FAILED]: 0,
-      [OrderStatus.CANCELLED]: 0
+      [OrderStatus.PENDING]: 10,      // Order received
+      [OrderStatus.PROCESSING]: 20,   // Validation complete
+      [OrderStatus.ROUTING]: 40,      // Price comparison done
+      [OrderStatus.EXECUTING]: 70,    // Transaction building/sending
+      [OrderStatus.COMPLETED]: 100,   // Fully completed
+      [OrderStatus.FAILED]: 0,        // Reset progress on failure
+      [OrderStatus.CANCELLED]: 0      // Reset progress on cancellation
     };
     return progressMap[status] || 0;
   }
@@ -244,62 +326,151 @@ export class OrderQueueService {
   /**
    * Setup Event Listeners
    * 
-   * Monitor queue events for debugging and metrics
+   * Monitor queue and worker events for debugging, metrics, and health monitoring.
+   * These events help track system performance and identify bottlenecks.
+   * 
+   * IMPORTANT: This method is called after worker initialization to prevent
+   * "Cannot read properties of undefined (reading 'on')" errors.
    */
   private setupEventListeners(): void {
-    // Job completed successfully
-    this.queueEvents.on('completed', ({ jobId, returnvalue }) => {
-      console.log(`✅ Job ${jobId} completed successfully`);
-    });
+    // Add defensive check to ensure worker exists
+    if (!this.worker) {
+      console.error('❌ Cannot setup event listeners: worker is undefined');
+      throw new Error('Worker must be initialized before setting up event listeners');
+    }
 
-    // Job failed after all retries
-    this.queueEvents.on('failed', ({ jobId, failedReason }) => {
-      console.error(`❌ Job ${jobId} failed permanently: ${failedReason}`);
-    });
+    if (!this.queueEvents) {
+      console.error('❌ Cannot setup event listeners: queueEvents is undefined');
+      throw new Error('QueueEvents must be initialized before setting up event listeners');
+    }
 
-    // Job progress updates
-    this.queueEvents.on('progress', ({ jobId, data }) => {
-      console.log(`📊 Job ${jobId} progress: ${data}%`);
-    });
+    try {
+      // Queue Events (for monitoring)
+      this.queueEvents.on('completed', ({ jobId, returnvalue }) => {
+        console.log(`✅ Job ${jobId} completed successfully`);
+      });
 
-    // Worker error handling
-    this.worker.on('error', (error) => {
-      console.error('🚨 Worker error:', error);
-    });
+      this.queueEvents.on('failed', ({ jobId, failedReason }) => {
+        console.error(`❌ Job ${jobId} failed permanently: ${failedReason}`);
+      });
 
-    console.log('🎧 Queue event listeners initialized');
+      this.queueEvents.on('progress', ({ jobId, data }) => {
+        console.log(`📊 Job ${jobId} progress: ${data}%`);
+      });
+
+      this.queueEvents.on('stalled', ({ jobId }) => {
+        console.warn(`⚠️ Job ${jobId} has stalled and will be retried`);
+      });
+
+      // Worker Events (for error handling)
+      this.worker.on('error', (error: any) => {
+        console.error('🚨 Worker error:', error);
+      });
+
+      this.worker.on('ready', () => {
+        console.log('🚀 Worker is ready to process jobs');
+      });
+
+      console.log('📡 Event listeners setup complete');
+    } catch (error: any) {
+      console.error('❌ Failed to setup event listeners:', error);
+      throw new Error(`Event listener setup failed: ${error.message}`);
+    }
   }
 
   /**
    * Get Queue Statistics
    * 
-   * Useful for monitoring and debugging
+   * Provides real-time queue metrics for monitoring and debugging.
+   * Used by health check endpoints and admin dashboards.
+   * 
+   * @returns Object containing queue statistics
    */
   async getQueueStats() {
-    const waiting = await this.queue.getWaiting();
-    const active = await this.queue.getActive();
-    const completed = await this.queue.getCompleted();
-    const failed = await this.queue.getFailed();
+    try {
+      const [waiting, active, completed, failed] = await Promise.all([
+        this.queue.getWaiting(),
+        this.queue.getActive(),
+        this.queue.getCompleted(),
+        this.queue.getFailed()
+      ]);
 
-    return {
-      waiting: waiting.length,
-      active: active.length,
-      completed: completed.length,
-      failed: failed.length,
-      total: waiting.length + active.length + completed.length + failed.length
-    };
+      return {
+        waiting: waiting.length,          // Orders waiting to be processed
+        active: active.length,            // Orders currently being processed
+        completed: completed.length,      // Successfully completed orders
+        failed: failed.length,            // Failed orders (after all retries)
+        total: waiting.length + active.length + completed.length + failed.length,
+        timestamp: new Date().toISOString()
+      };
+    } catch (error: any) {
+      console.error('Failed to get queue stats:', error);
+      return null;
+    }
+  }
+
+  /**
+   * Health Check
+   * 
+   * Verifies that the queue service is healthy and operational.
+   * Checks Redis connection, worker status, and queue accessibility.
+   * 
+   * @returns Boolean indicating service health
+   */
+  async healthCheck(): Promise<boolean> {
+    try {
+      // Test Redis connection
+      const client = await this.queue.client;
+      await client.ping();
+      
+      // Check if worker is running
+      if (!this.worker || this.worker.isRunning() === false) {
+        return false;
+      }
+
+      // Try to get basic queue info
+      await this.getQueueStats();
+      
+      return true;
+    } catch (error: any) {
+      console.error('Queue service health check failed:', error);
+      return false;
+    }
   }
 
   /**
    * Graceful Shutdown
    * 
-   * Properly close connections when application shuts down
+   * Properly close all connections and workers when application shuts down.
+   * This ensures no jobs are lost and all Redis connections are cleaned up.
+   * 
+   * Call this during application shutdown (SIGTERM/SIGINT handlers).
    */
   async shutdown(): Promise<void> {
     console.log('🔄 Shutting down queue service...');
-    await this.worker.close();
-    await this.queue.close();
-    await this.queueEvents.close();
-    console.log('✅ Queue service shutdown complete');
+    
+    try {
+      // Close worker first (stops processing new jobs)
+      if (this.worker) {
+        await this.worker.close();
+        console.log('✅ Worker closed');
+      }
+
+      // Close queue events
+      if (this.queueEvents) {
+        await this.queueEvents.close();
+        console.log('✅ Queue events closed');
+      }
+
+      // Close queue last
+      if (this.queue) {
+        await this.queue.close();
+        console.log('✅ Queue closed');
+      }
+
+      console.log('✅ Queue service shutdown complete');
+    } catch (error: any) {
+      console.error('❌ Error during queue service shutdown:', error);
+    }
   }
 }

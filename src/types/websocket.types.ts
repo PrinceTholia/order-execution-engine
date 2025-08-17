@@ -5,6 +5,8 @@
  * These types ensure consistent communication between server and client.
  */
 
+import { OrderId, UserId, OrderStatus, DEXProvider } from './order.types';
+
 export enum WebSocketEventType {
   ORDER_CREATED = 'order_created',
   ORDER_STATUS_UPDATE = 'order_status_update',

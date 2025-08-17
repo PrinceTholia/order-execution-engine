@@ -166,23 +166,25 @@ export async function registerOrderRoutes(
         // Return orderId immediately as required by assignment
         return reply.status(201).send(response);
 
-      } catch (error) {
+      } catch (error: any) {
         const processingTime = Date.now() - startTime;
         console.error(`❌ Order submission failed (${processingTime}ms):`, error);
 
         // Handle different types of errors
-        if (error.message.includes('Queue submission failed')) {
-          return reply.status(503).send({
-            error: 'Service temporarily unavailable',
-            message: 'Order processing queue is currently unavailable. Please try again.'
-          });
-        }
+        if (error instanceof Error) {
+          if (error.message.includes('Queue submission failed')) {
+            return reply.status(503).send({
+              error: 'Service temporarily unavailable',
+              message: 'Order processing queue is currently unavailable. Please try again.'
+            });
+          }
 
-        if (error.message.includes('Database error')) {
-          return reply.status(500).send({
-            error: 'Database error',
-            message: 'Failed to save order. Please try again.'
-          });
+          if (error.message.includes('Database error')) {
+            return reply.status(500).send({
+              error: 'Database error',
+              message: 'Failed to save order. Please try again.'
+            });
+          }
         }
 
         // Generic error response
@@ -191,6 +193,7 @@ export async function registerOrderRoutes(
           message: 'An unexpected error occurred while processing your order.'
         });
       }
+
     }
   );
 

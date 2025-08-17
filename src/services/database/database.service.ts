@@ -53,13 +53,14 @@ export class DatabaseService {
     try {
       await this.db.query(query, values);
       console.log(`📝 Order ${order.id} created in database`);
-    } catch (error) {
+    } catch (error: any) {
       console.error(`Database error for order ${order.id}:`, error);
-      if (error.message.includes('numeric field overflow')) {
+      if (error instanceof Error && error.message.includes('numeric field overflow')) {
         throw new Error('Order amount exceeds maximum allowed value');
       }
-      throw new Error(`Database error: ${error.message}`);
+      throw new Error(`Database error: ${error instanceof Error ? error.message : String(error)}`);
     }
+
   }
 
 

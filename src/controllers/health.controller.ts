@@ -109,8 +109,10 @@ export async function registerHealthRoutes(
         services.database.healthCheck().catch(() => false),
         services.dexRouter.healthCheck().catch(() => ({ raydium: false, meteora: false })),
         services.orderQueue.getQueueStats().catch(() => null),
-        services.websocket.getConnectionStats().catch(() => null)
+        // Remove .catch() since this is synchronous
+        Promise.resolve(services.websocket.getConnectionStats())
       ]);
+
 
       // 💡 Beginner Tip: Determine overall system health based on critical services
       const criticalServicesHealthy = databaseHealthy && 
@@ -206,7 +208,7 @@ export async function registerHealthRoutes(
         capacity: {
           maxConcurrent: 10,
           maxPerMinute: 100,
-          currentLoad: queueStats.active || 0
+          currentLoad: queueStats?.active || 0
         }
       });
 
