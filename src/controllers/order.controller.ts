@@ -146,10 +146,15 @@ export async function registerOrderRoutes(
 
         // Save order to database first
         await databaseService.createOrder(newOrder);
+        console.log(`📝 Order ${orderId} created in database`);
+
+        // 🔍 DEBUG: Add this logging  
+        console.log(`🔍 DEBUG OrderController: Order created for userId=${userId}, orderId=${orderId}`);
 
         // Add order to processing queue
         // 🏗️ Architecture Note: Queue handles all the heavy lifting
         await orderQueueService.addOrderToQueue(newOrder);
+        console.log(`📥 Order ${orderId} added to processing queue`);
 
         // Prepare success response
         const response: ExecuteOrderResponse = {

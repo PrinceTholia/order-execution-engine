@@ -285,6 +285,7 @@ export class OrderQueueService {
    * @param newStatus - New status to set
    * @param message - Human-readable status message
    */
+  
   private async updateOrderStatus(order: Order, newStatus: OrderStatus, message: string): Promise<void> {
     const oldStatus = order.status;
     order.status = newStatus;
@@ -292,6 +293,10 @@ export class OrderQueueService {
 
     // Update database first (persistence)
     await this.database.updateOrderStatus(order.id, newStatus);
+
+    // 🔍 DEBUG: Add this logging
+    console.log(`🔍 DEBUG QueueService: About to send WebSocket update`);
+    console.log(`🔍 DEBUG orderId=${order.id}, userId=${order.userId}, status=${oldStatus} → ${newStatus}`);
 
     // Send WebSocket update second (real-time notification)
     await this.websocketService.sendOrderUpdate(order.userId, {
@@ -304,6 +309,7 @@ export class OrderQueueService {
 
     console.log(`📈 Order ${order.id} status: ${oldStatus} → ${newStatus}`);
   }
+
 
   /**
    * Progress Calculation Helper

@@ -207,17 +207,23 @@ export class WebSocketService {
   private async sendToUser(userId: UserId, message: WebSocketMessage): Promise<void> {
     const userConnections = Array.from(this.connections.entries())
       .filter(([_, conn]) => conn.userId === userId);
-
+    
+    // 🔍 DEBUG: Add this logging
+    console.log(`🔍 DEBUG sendToUser: userId=${userId}, found ${userConnections.length} connections`);
+    console.log(`🔍 DEBUG total connections: ${this.connections.size}`);
+    
     if (userConnections.length === 0) {
-      console.warn(`⚠️  No active WebSocket connections for user ${userId}`);
+      console.warn(`⚠️ No active WebSocket connections for user ${userId}`);
       return;
     }
 
     // Send to all of user's connections
     userConnections.forEach(([connectionId, _]) => {
       this.sendToConnection(connectionId, message);
+      console.log(`🔍 DEBUG: Message sent to connectionId ${connectionId}`);
     });
   }
+
 
   /**
    * Send Message to Specific Connection
